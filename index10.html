@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>مؤقت صوتي ذكي</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #121212;
+            color: #ffffff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            text-align: center;
+        }
+        .timer-display {
+            font-size: 6rem;
+            font-weight: bold;
+            font-family: monospace;
+            background: #1e1e1e;
+            padding: 20px 40px;
+            border-radius: 15px;
+            box-shadow: 0 0 20px rgba(0, 255, 136, 0.2);
+            color: #00ff88;
+            margin-bottom: 20px;
+            transition: all 0.3s ease;
+        }
+        .timer-display.alarm {
+            color: #ff3b3b;
+            box-shadow: 0 0 30px rgba(255, 59, 59, 0.6);
+            animation: pulse 0.8s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+        button {
+            background-color: #00ff88;
+            color: #121212;
+            border: none;
+            padding: 15px 30px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            border-radius: 30px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        button:hover {
+            background-color: #00cc6a;
+        }
+        button:disabled {
+            background-color: #555;
+            color: #888;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 20px;
+            font-size: 1.2rem;
+            color: #aaa;
+        }
+        .transcript {
+            margin-top: 10px;
+            font-size: 1rem;
+            color: #00ff88;
+            min-height: 24px;
+        }
+        .instructions {
+            margin-top: 30px;
+            background: #1e1e1e;
+            padding: 15px 25px;
+            border-radius: 10px;
+            font-size: 0.95rem;
+            color: #ccc;
+            line-height: 1.8;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="timer-display" id="display">00:00</div>
+    
+    <button id="startBtn">تفعيل الميكروفون</button>
+    
+    <div class="status" id="status">اضغط على الزر لبدء الاستماع للأوامر الصوتية</div>
+    <div class="transcript" id="transcript"></div>
+
+    <div class="instructions">
+        <strong>الأوامر الصوتية المدعومة:</strong><br>
+        • لضبط الوقت: قل مثلاً <em>"10 ثواني"</em> أو <em>"دقيقتين"</em> أو <em>"5 دقائق"</em><br>
+        • لإلغاء الوقت أو إيقاف الجرس: قل <strong>"توقف"</strong>
+    </div>
+
+    <script>
+        const display = document.getElementById('display');
+        const startBtn = document.getElementById('startBtn');
+        const statusEl = document.getElementById('status');
+        const transcriptEl = document.getElementById('transcript');
+
+        let timerInterval = null;
+        let remainingSeconds = 0;
+        let isRinging = false;
+        let audioCtx = null;
+        let alarmInterval = null;
+
+        // تهيئة التعرف على الصوت
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        
+        if (!SpeechRecognition) {
+            statusEl.textContent = "عذراً، متصفحك لا يدعم التعرف على الصوت. استخدم Google Chrome.";
+            startBtn.disabled = true;
+        }
+
+        const recognition = new SpeechRecognition();
+        recognition.lang = 'ar-EG'; // يدعم العربية الفصحى واللهجات (يمكن تغييره لـ ar-SA)
+        recognition.continuous = true;
+        recognition.interimResults = false;
+
+        // تفعيل الميكروفون والصوت عند الضغط (مطلوب أمنياً من المتصفحات)
+        startBtn.addEventListener('click', () => {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            recognition.start();
+            startBtn.disabled = true;
+            startBtn.textContent = "الميكروفون نشط...";
+            statusEl.textContent = "أنا أستمع إليك الآن...";
+        });
+
+        // إعادة تشغيل الاستماع تلقائياً إذا توقف لأي سبب
+        recognition.onend = () => {
+            if (startBtn.disabled) {
+                recognition.start();
+            }
+        };
+
+        recognition.onerror = (event) => {
+            console.error("خطأ في الصوت:", event.error);
+        };
+
+        // معالجة الكلام المسموع
+        recognition.onresult = (event) => {
+            const last = event.results.length - 1;
+            const command = event.results[last][0].transcript.trim();
+            transcriptEl.textContent = `سمعت: "${command}"`;
+
+            processVoiceCommand(command);
+        };
+
+        function processVoiceCommand(text) {
+            // 1. التحقق من أمر الإيقاف
+            if (text.includes("توقف") || text.includes("قف") || text.includes("إيقاف")) {
+                stopAll();
+                statusEl.textContent = "تم الإيقاف.";
+                return;
+            }
+
+            // 2. تحليل الوقت من النص
+            let seconds = parseTimeFromArabic(text);
+            if (seconds > 0) {
+                startTimer(seconds);
+            }
+        }
+
+        // دالة تحويل الكلام العربي إلى ثواني
+        function parseTimeFromArabic(text) {
+            let totalSeconds = 0;
+            
+            // استخراج الأرقام المكتوبة (مثل 5، 10)
+            const numbers = text.match(/\d+/g);
+            let num = numbers ? parseInt(numbers[0]) : 0;
+
+            // التعامل مع الأرقام المكتوبة بالحروف الشائعة
+            if (num === 0) {
+                if (text.includes("نصف")) num = 0.5;
+                else if (text.includes("واحد") || text.includes("دقيقة") || text.includes("ثانية") || text.includes("ساعة")) num = 1;
+                else if (text.includes("اثنين") || text.includes("دقيقتين") || text.includes("ثانيتين") || text.includes("ساعتين")) num = 2;
+                else if (text.includes("ثلاث")) num = 3;
+                else if (text.includes("أربع") || text.includes("اربع")) num = 4;
+                else if (text.includes("خمس")) num = 5;
+                else if (text.includes("عشر")) num = 10;
+            }
+
+            if (num > 0) {
+                if (text.includes("ساع")) {
+                    totalSeconds = num * 3600;
+                } else if (text.includes("دقيق") || text.includes("دقائق")) {
+                    totalSeconds = num * 60;
+                } else {
+                    // الافتراضي ثواني إذا لم يذكر دقيقة أو ساعة
+                    totalSeconds = num;
+                }
+            }
+
+            return Math.floor(totalSeconds);
+        }
+
+        function startTimer(seconds) {
+            stopAll(); // إيقاف أي مؤقت سابق
+            remainingSeconds = seconds;
+            updateDisplay();
+            statusEl.textContent = "المؤقت يعمل...";
+
+            timerInterval = setInterval(() => {
+                remainingSeconds--;
+                updateDisplay();
+
+                if (remainingSeconds <= 0) {
+                    clearInterval(timerInterval);
+                    triggerAlarm();
+                }
+            }, 1000);
+        }
+
+        function updateDisplay() {
+            const mins = Math.floor(remainingSeconds / 60);
+            const secs = remainingSeconds % 60;
+            display.textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+        }
+
+        // تشغيل الجرس المستمر
+        function triggerAlarm() {
+            isRinging = true;
+            display.classList.add('alarm');
+            statusEl.textContent = "انتهى الوقت! قل 'توقف' لإسكات الجرس.";
+
+            // دالة إصدار نغمة تنبيه (Beep)
+            const playBeep = () => {
+                if (!isRinging) return;
+                const oscillator = audioCtx.createOscillator();
+                const gainNode = audioCtx.createGain();
+                
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); // تردد الصوت
+                
+                gainNode.gain.setValueAtTime(0.5, audioCtx.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+
+                oscillator.connect(gainNode);
+                gainNode.connect(audioCtx.destination);
+
+                oscillator.start();
+                oscillator.stop(audioCtx.currentTime + 0.5);
+            };
+
+            playBeep();
+            alarmInterval = setInterval(playBeep, 800); // تكرار الصوت كل 0.8 ثانية
+        }
+
+        // إيقاف المؤقت والجرس وتصفير الشاشة
+        function stopAll() {
+            clearInterval(timerInterval);
+            clearInterval(alarmInterval);
+            isRinging = false;
+            remainingSeconds = 0;
+            display.classList.remove('alarm');
+            updateDisplay();
+        }
+    </script>
+</body>
+</html>
